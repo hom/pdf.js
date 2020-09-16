@@ -416,6 +416,7 @@ var CanvasExtraState = (function CanvasExtraStateClosure() {
     this.lineWidth = 1;
     this.activeSMask = null;
     this.resumeSMaskCtx = null; // nonclonable field (see the save method below)
+    this.transferMaps = null;
   }
 
   CanvasExtraState.prototype = {
@@ -484,7 +485,7 @@ var CanvasGraphics = (function CanvasGraphicsClosure() {
     this._cachedGetSinglePixelWidth = null;
   }
 
-  function putBinaryImageData(ctx, imgData) {
+  function putBinaryImageData(ctx, imgData, transferMaps = null) {
     if (typeof ImageData !== "undefined" && imgData instanceof ImageData) {
       ctx.putImageData(imgData, 0, 0);
       return;
@@ -514,6 +515,24 @@ var CanvasGraphics = (function CanvasGraphicsClosure() {
     var dest = chunkImgData.data;
     var i, j, thisChunkHeight, elemsInThisChunk;
 
+    let transferMapRed, transferMapGreen, transferMapBlue, transferMapGray;
+    if (transferMaps) {
+      switch (transferMaps.length) {
+        case 1:
+          transferMapRed = transferMaps[0];
+          transferMapGreen = transferMaps[0];
+          transferMapBlue = transferMaps[0];
+          transferMapGray = transferMaps[0];
+          break;
+        case 4:
+          transferMapRed = transferMaps[0];
+          transferMapGreen = transferMaps[1];
+          transferMapBlue = transferMaps[2];
+          transferMapGray = transferMaps[3];
+          break;
+      }
+    }
+
     // There are multiple forms in which the pixel data can be passed, and
     // imgData.kind tells us which one this is.
     if (imgData.kind === ImageKind.GRAYSCALE_1BPP) {
@@ -524,13 +543,20 @@ var CanvasGraphics = (function CanvasGraphicsClosure() {
       var fullSrcDiff = (width + 7) >> 3;
       var white = 0xffffffff;
       var black = IsLittleEndianCached.value ? 0xff000000 : 0x000000ff;
+
+      if (transferMapGray) {
+        if (transferMapGray[0] === 0xff && transferMapGray[0xff] === 0) {
+          [white, black] = [black, white];
+        }
+      }
+
       for (i = 0; i < totalChunks; i++) {
         thisChunkHeight =
           i < fullChunks ? FULL_CHUNK_HEIGHT : partialChunkHeight;
         destPos = 0;
         for (j = 0; j < thisChunkHeight; j++) {
           var srcDiff = srcLength - srcPos;
-          var k = 0;
+          let k = 0;
           var kEnd = srcDiff > fullSrcDiff ? width : srcDiff * 8 - 7;
           var kEndUnrolled = kEnd & ~7;
           var mask = 0;
@@ -565,6 +591,11 @@ var CanvasGraphics = (function CanvasGraphicsClosure() {
       }
     } else if (imgData.kind === ImageKind.RGBA_32BPP) {
       // RGBA, 32-bits per pixel.
+      const hasTransferMaps = !!(
+        transferMapRed ||
+        transferMapGreen ||
+        transferMapBlue
+      );
 
       j = 0;
       elemsInThisChunk = width * FULL_CHUNK_HEIGHT * 4;
@@ -572,16 +603,51 @@ var CanvasGraphics = (function CanvasGraphicsClosure() {
         dest.set(src.subarray(srcPos, srcPos + elemsInThisChunk));
         srcPos += elemsInThisChunk;
 
+        if (hasTransferMaps) {
+          for (let k = 0; k < elemsInThisChunk; k += 4) {
+            if (transferMapRed) {
+              dest[k + 0] = transferMapRed[dest[k + 0]];
+            }
+            if (transferMapGreen) {
+              dest[k + 1] = transferMapGreen[dest[k + 1]];
+            }
+            if (transferMapBlue) {
+              dest[k + 2] = transferMapBlue[dest[k + 2]];
+            }
+          }
+        }
+
         ctx.putImageData(chunkImgData, 0, j);
         j += FULL_CHUNK_HEIGHT;
       }
       if (i < totalChunks) {
         elemsInThisChunk = width * partialChunkHeight * 4;
         dest.set(src.subarray(srcPos, srcPos + elemsInThisChunk));
+
+        if (hasTransferMaps) {
+          for (let k = 0; k < elemsInThisChunk; k += 4) {
+            if (transferMapRed) {
+              dest[k + 0] = transferMapRed[dest[k + 0]];
+            }
+            if (transferMapGreen) {
+              dest[k + 1] = transferMapGreen[dest[k + 1]];
+            }
+            if (transferMapBlue) {
+              dest[k + 2] = transferMapBlue[dest[k + 2]];
+            }
+          }
+        }
+
         ctx.putImageData(chunkImgData, 0, j);
       }
     } else if (imgData.kind === ImageKind.RGB_24BPP) {
       // RGB, 24-bits per pixel.
+      const hasTransferMaps = !!(
+        transferMapRed ||
+        transferMapGreen ||
+        transferMapBlue
+      );
+
       thisChunkHeight = FULL_CHUNK_HEIGHT;
       elemsInThisChunk = width * thisChunkHeight;
       for (i = 0; i < totalChunks; i++) {
@@ -597,6 +663,21 @@ var CanvasGraphics = (function CanvasGraphicsClosure() {
           dest[destPos++] = src[srcPos++];
           dest[destPos++] = 255;
         }
+
+        if (hasTransferMaps) {
+          for (let k = 0; k < destPos; k += 4) {
+            if (transferMapRed) {
+              dest[k + 0] = transferMapRed[dest[k + 0]];
+            }
+            if (transferMapGreen) {
+              dest[k + 1] = transferMapGreen[dest[k + 1]];
+            }
+            if (transferMapBlue) {
+              dest[k + 2] = transferMapBlue[dest[k + 2]];
+            }
+          }
+        }
+
         ctx.putImageData(chunkImgData, 0, i * FULL_CHUNK_HEIGHT);
       }
     } else {
@@ -928,8 +1009,8 @@ var CanvasGraphics = (function CanvasGraphicsClosure() {
 
     endDrawing: function CanvasGraphics_endDrawing() {
       // Finishing all opened operations such as SMask group painting.
-      if (this.current.activeSMask !== null) {
-        this.endSMaskGroup();
+      while (this.stateStack.length || this.current.activeSMask !== null) {
+        this.restore();
       }
 
       this.ctx.restore();
@@ -1040,6 +1121,8 @@ var CanvasGraphics = (function CanvasGraphicsClosure() {
             }
             this.tempSMask = null;
             break;
+          case "TR":
+            this.current.transferMaps = value;
         }
       }
     },
@@ -1109,7 +1192,7 @@ var CanvasGraphics = (function CanvasGraphicsClosure() {
       groupCtx.clearRect(0, 0, groupCtx.canvas.width, groupCtx.canvas.height);
       groupCtx.restore();
     },
-    resumeSMaskGroup: function CanvasGraphics_endSMaskGroup() {
+    resumeSMaskGroup: function CanvasGraphics_resumeSMaskGroup() {
       // Resuming state saved by suspendSMaskGroup. We don't need to restore
       // any groupCtx state since restore() command (the only caller) will do
       // that for us. See also beginSMaskGroup.
@@ -1171,6 +1254,9 @@ var CanvasGraphics = (function CanvasGraphicsClosure() {
         this.pendingClip = null;
 
         this._cachedGetSinglePixelWidth = null;
+      } else {
+        // We've finished all the SMask groups, reflect that in our state.
+        this.current.activeSMask = null;
       }
     },
     transform: function CanvasGraphics_transform(a, b, c, d, e, f) {
@@ -1715,8 +1801,10 @@ var CanvasGraphics = (function CanvasGraphicsClosure() {
           } else {
             this.paintChar(character, scaledX, scaledY, patternTransform);
             if (accent) {
-              scaledAccentX = scaledX + accent.offset.x / fontSizeScale;
-              scaledAccentY = scaledY - accent.offset.y / fontSizeScale;
+              scaledAccentX =
+                scaledX + (fontSize * accent.offset.x) / fontSizeScale;
+              scaledAccentY =
+                scaledY - (fontSize * accent.offset.y) / fontSizeScale;
               this.paintChar(
                 accent.fontChar,
                 scaledAccentX,
@@ -2362,7 +2450,7 @@ var CanvasGraphics = (function CanvasGraphicsClosure() {
       } else {
         tmpCanvas = this.cachedCanvases.getCanvas("inlineImage", width, height);
         var tmpCtx = tmpCanvas.context;
-        putBinaryImageData(tmpCtx, imgData);
+        putBinaryImageData(tmpCtx, imgData, this.current.transferMaps);
         imgToPaint = tmpCanvas.canvas;
       }
 
@@ -2447,7 +2535,7 @@ var CanvasGraphics = (function CanvasGraphicsClosure() {
 
       var tmpCanvas = this.cachedCanvases.getCanvas("inlineImage", w, h);
       var tmpCtx = tmpCanvas.context;
-      putBinaryImageData(tmpCtx, imgData);
+      putBinaryImageData(tmpCtx, imgData, this.current.transferMaps);
 
       for (var i = 0, ii = map.length; i < ii; i++) {
         var entry = map[i];

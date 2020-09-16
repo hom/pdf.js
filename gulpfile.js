@@ -54,7 +54,8 @@ var GENERIC_DIR = BUILD_DIR + "generic/";
 var GENERIC_ES5_DIR = BUILD_DIR + "generic-es5/";
 var COMPONENTS_DIR = BUILD_DIR + "components/";
 var COMPONENTS_ES5_DIR = BUILD_DIR + "components-es5/";
-var IMAGE_DECODERS_DIR = BUILD_DIR + "image_decoders";
+var IMAGE_DECODERS_DIR = BUILD_DIR + "image_decoders/";
+var IMAGE_DECODERS_ES5_DIR = BUILD_DIR + "image_decoders-es5/";
 var DEFAULT_PREFERENCES_DIR = BUILD_DIR + "default_preferences/";
 var MINIFIED_DIR = BUILD_DIR + "minified/";
 var MINIFIED_ES5_DIR = BUILD_DIR + "minified-es5/";
@@ -769,7 +770,6 @@ function buildComponents(defines, dir) {
     "web/images/annotation-*.svg",
     "web/images/loading-icon.gif",
     "web/images/shadow.png",
-    "web/images/texture.png",
   ];
 
   return merge([
@@ -825,6 +825,23 @@ gulp.task(
 
     return createImageDecodersBundle(defines).pipe(
       gulp.dest(IMAGE_DECODERS_DIR)
+    );
+  })
+);
+
+gulp.task(
+  "image_decoders-es5",
+  gulp.series("buildnumber", function () {
+    console.log();
+    console.log("### Creating (ES5) image decoders");
+    var defines = builder.merge(DEFINES, {
+      GENERIC: true,
+      IMAGE_DECODERS: true,
+      SKIP_BABEL: false,
+    });
+
+    return createImageDecodersBundle(defines).pipe(
+      gulp.dest(IMAGE_DECODERS_ES5_DIR)
     );
   })
 );
@@ -909,18 +926,30 @@ function parseMinified(dir) {
   console.log("### Minifying js files");
 
   var Terser = require("terser");
-  // V8 chokes on very long sequences. Works around that.
-  var optsForHugeFile = { compress: { sequences: false } };
+  var options = {
+    compress: {
+      // V8 chokes on very long sequences, work around that.
+      sequences: false,
+    },
+    keep_classnames: true,
+    keep_fnames: true,
+  };
 
-  fs.writeFileSync(dir + "/web/pdf.viewer.js", Terser.minify(viewerFiles).code);
-  fs.writeFileSync(dir + "/build/pdf.min.js", Terser.minify(pdfFile).code);
+  fs.writeFileSync(
+    dir + "/web/pdf.viewer.js",
+    Terser.minify(viewerFiles, options).code
+  );
+  fs.writeFileSync(
+    dir + "/build/pdf.min.js",
+    Terser.minify(pdfFile, options).code
+  );
   fs.writeFileSync(
     dir + "/build/pdf.worker.min.js",
-    Terser.minify(pdfWorkerFile, optsForHugeFile).code
+    Terser.minify(pdfWorkerFile, options).code
   );
   fs.writeFileSync(
     dir + "image_decoders/pdf.image_decoders.min.js",
-    Terser.minify(pdfImageDecodersFile).code
+    Terser.minify(pdfImageDecodersFile, options).code
   );
 
   console.log();
@@ -1442,10 +1471,10 @@ gulp.task(
 
 gulp.task("lint", function (done) {
   console.log();
-  console.log("### Linting JS files");
+  console.log("### Linting JS/CSS files");
 
   // Ensure that we lint the Firefox specific *.jsm files too.
-  var options = [
+  const esLintOptions = [
     "node_modules/eslint/bin/eslint",
     "--ext",
     ".js,.jsm",
@@ -1453,16 +1482,34 @@ gulp.task("lint", function (done) {
     "--report-unused-disable-directives",
   ];
   if (process.argv.includes("--fix")) {
-    options.push("--fix");
+    esLintOptions.push("--fix");
   }
-  var esLintProcess = startNode(options, { stdio: "inherit" });
-  esLintProcess.on("close", function (code) {
-    if (code !== 0) {
+
+  const styleLintOptions = [
+    "node_modules/stylelint/bin/stylelint",
+    "**/*.css",
+    "--report-needless-disables",
+  ];
+  if (process.argv.includes("--fix")) {
+    styleLintOptions.push("--fix");
+  }
+
+  const esLintProcess = startNode(esLintOptions, { stdio: "inherit" });
+  esLintProcess.on("close", function (esLintCode) {
+    if (esLintCode !== 0) {
       done(new Error("ESLint failed."));
       return;
     }
-    console.log("files checked, no errors found");
-    done();
+
+    const styleLintProcess = startNode(styleLintOptions, { stdio: "inherit" });
+    styleLintProcess.on("close", function (styleLintCode) {
+      if (styleLintCode !== 0) {
+        done(new Error("Stylelint failed."));
+        return;
+      }
+      console.log("files checked, no errors found");
+      done();
+    });
   });
 });
 
@@ -1682,8 +1729,10 @@ gulp.task(
     "components",
     "components-es5",
     "image_decoders",
+    "image_decoders-es5",
     "lib",
     "minified",
+    "minified-es5",
     "types",
     function () {
       console.log();
@@ -1741,6 +1790,18 @@ gulp.task(
           .pipe(rename("pdf.image_decoders.min.js"))
           .pipe(gulp.dest(DIST_DIR + "image_decoders/")),
         gulp
+          .src(MINIFIED_ES5_DIR + "build/pdf.js")
+          .pipe(rename("pdf.min.js"))
+          .pipe(gulp.dest(DIST_DIR + "es5/build/")),
+        gulp
+          .src(MINIFIED_ES5_DIR + "build/pdf.worker.js")
+          .pipe(rename("pdf.worker.min.js"))
+          .pipe(gulp.dest(DIST_DIR + "es5/build/")),
+        gulp
+          .src(MINIFIED_ES5_DIR + "image_decoders/pdf.image_decoders.js")
+          .pipe(rename("pdf.image_decoders.min.js"))
+          .pipe(gulp.dest(DIST_DIR + "es5/image_decoders/")),
+        gulp
           .src(COMPONENTS_DIR + "**/*", { base: COMPONENTS_DIR })
           .pipe(gulp.dest(DIST_DIR + "web/")),
         gulp
@@ -1748,7 +1809,12 @@ gulp.task(
           .pipe(gulp.dest(DIST_DIR + "es5/web/")),
         gulp
           .src(IMAGE_DECODERS_DIR + "**/*", { base: IMAGE_DECODERS_DIR })
-          .pipe(gulp.dest(DIST_DIR + "image_decoders")),
+          .pipe(gulp.dest(DIST_DIR + "image_decoders/")),
+        gulp
+          .src(IMAGE_DECODERS_ES5_DIR + "**/*", {
+            base: IMAGE_DECODERS_ES5_DIR,
+          })
+          .pipe(gulp.dest(DIST_DIR + "es5/image_decoders/")),
         gulp
           .src(LIB_DIR + "**/*", { base: LIB_DIR })
           .pipe(gulp.dest(DIST_DIR + "lib/")),

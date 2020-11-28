@@ -12,7 +12,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-/* eslint no-var: error */
 
 /**
  * @module pdfjsLib
@@ -807,6 +806,23 @@ class PDFDocumentProxy {
   }
 
   /**
+   * @typedef {Object} MarkInfo
+   * Properties correspond to Table 321 of the PDF 32000-1:2008 spec.
+   * @property {boolean} Marked
+   * @property {boolean} UserProperties
+   * @property {boolean} Suspects
+   */
+
+  /**
+   * @returns {Promise<MarkInfo | null>} A promise that is resolved with
+   *   a {MarkInfo} object that contains the MarkInfo flags for the PDF
+   *   document, or `null` when no MarkInfo values are present in the PDF file.
+   */
+  getMarkInfo() {
+    return this._transport.getMarkInfo();
+  }
+
+  /**
    * @returns {Promise<TypedArray>} A promise that is resolved with a
    *   {TypedArray} that has the raw data from the PDF.
    */
@@ -876,6 +892,32 @@ class PDFDocumentProxy {
    */
   saveDocument(annotationStorage) {
     return this._transport.saveDocument(annotationStorage);
+  }
+
+  /**
+   * @returns {Promise<Array<Object> | null>} A promise that is resolved with an
+   *   {Array<Object>} containing /AcroForm field data for the JS sandbox,
+   *   or `null` when no field data is present in the PDF file.
+   */
+  getFieldObjects() {
+    return this._transport.getFieldObjects();
+  }
+
+  /**
+   * @returns {Promise<boolean>} A promise that is resolved with `true`
+   *   if some /AcroForm fields have JavaScript actions.
+   */
+  hasJSActions() {
+    return this._transport.hasJSActions();
+  }
+
+  /**
+   * @returns {Promise<Array<string> | null>} A promise that is resolved with an
+   *   {Array<string>} containing IDs of annotations that have a calculation
+   *   action, or `null` when no such annotations are present in the PDF file.
+   */
+  getCalculationOrderIds() {
+    return this._transport.getCalculationOrderIds();
   }
 }
 
@@ -1151,8 +1193,7 @@ class PDFPageProxy {
         pageIndex: this._pageIndex,
         intent: renderingIntent,
         renderInteractiveForms: renderInteractiveForms === true,
-        annotationStorage:
-          (annotationStorage && annotationStorage.getAll()) || null,
+        annotationStorage: annotationStorage?.getAll() || null,
       });
     }
 
@@ -1533,9 +1574,7 @@ class PDFPageProxy {
         return;
       }
     }
-    intentState.streamReader.cancel(
-      new AbortException(reason && reason.message)
-    );
+    intentState.streamReader.cancel(new AbortException(reason?.message));
     intentState.streamReader = null;
 
     if (this._transport.destroyed) {
@@ -1582,8 +1621,7 @@ class LoopbackPort {
       let buffer, result;
       if ((buffer = value.buffer) && isArrayBuffer(buffer)) {
         // We found object with ArrayBuffer (typed array).
-        const transferable = transfers && transfers.includes(buffer);
-        if (transferable) {
+        if (transfers?.includes(buffer)) {
           result = new value.constructor(
             buffer,
             value.byteOffset,
@@ -1679,8 +1717,7 @@ const PDFWorker = (function PDFWorkerClosure() {
         fallbackWorkerSrc = "./pdf.worker.js";
       }
     } else if (typeof document === "object" && "currentScript" in document) {
-      const pdfjsFilePath =
-        document.currentScript && document.currentScript.src;
+      const pdfjsFilePath = document.currentScript?.src;
       if (pdfjsFilePath) {
         fallbackWorkerSrc = pdfjsFilePath.replace(
           /(\.(?:min\.)?js)(\?.*)?$/i,
@@ -1706,8 +1743,7 @@ const PDFWorker = (function PDFWorkerClosure() {
   function getMainThreadWorkerMessageHandler() {
     let mainWorkerMessageHandler;
     try {
-      mainWorkerMessageHandler =
-        globalThis.pdfjsWorker && globalThis.pdfjsWorker.WorkerMessageHandler;
+      mainWorkerMessageHandler = globalThis.pdfjsWorker?.WorkerMessageHandler;
     } catch (ex) {
       /* Ignore errors. */
     }
@@ -1729,12 +1765,7 @@ const PDFWorker = (function PDFWorkerClosure() {
         return mainWorkerMessageHandler;
       }
       if (typeof PDFJSDev === "undefined" || !PDFJSDev.test("PRODUCTION")) {
-        if (typeof SystemJS !== "object") {
-          // Manually load SystemJS, since it's only necessary for fake workers.
-          await loadScript("../node_modules/systemjs/dist/system.js");
-          await loadScript("../systemjs.config.js");
-        }
-        const worker = await SystemJS.import("pdfjs/core/worker.js");
+        const worker = await import("pdfjs/core/worker.js");
         return worker.WorkerMessageHandler;
       }
       if (
@@ -2097,7 +2128,10 @@ class WorkerTransport {
     const terminated = this.messageHandler.sendWithPromise("Terminate", null);
     waitOn.push(terminated);
     Promise.all(waitOn).then(() => {
+      this.commonObjs.clear();
       this.fontLoader.clear();
+      this._hasJSActionsPromise = null;
+
       if (this._networkStream) {
         this._networkStream.cancelAllRequests(
           new AbortException("Worker was terminated.")
@@ -2350,11 +2384,7 @@ class WorkerTransport {
           }
 
           let fontRegistry = null;
-          if (
-            params.pdfBug &&
-            globalThis.FontInspector &&
-            globalThis.FontInspector.enabled
-          ) {
+          if (params.pdfBug && globalThis.FontInspector?.enabled) {
             fontRegistry = {
               registerFont(font, url) {
                 globalThis.FontInspector.fontAdded(font, url);
@@ -2413,11 +2443,7 @@ class WorkerTransport {
 
           // Heuristic that will allow us not to store large data.
           const MAX_IMAGE_SIZE_TO_STORE = 8000000;
-          if (
-            imageData &&
-            "data" in imageData &&
-            imageData.data.length > MAX_IMAGE_SIZE_TO_STORE
-          ) {
+          if (imageData?.data?.length > MAX_IMAGE_SIZE_TO_STORE) {
             pageProxy.cleanupAfterRender = true;
           }
           break;
@@ -2539,8 +2565,7 @@ class WorkerTransport {
     return this.messageHandler
       .sendWithPromise("SaveDocument", {
         numPages: this._numPages,
-        annotationStorage:
-          (annotationStorage && annotationStorage.getAll()) || null,
+        annotationStorage: annotationStorage?.getAll() || null,
         filename: this._fullReader ? this._fullReader.filename : null,
       })
       .finally(() => {
@@ -2548,6 +2573,21 @@ class WorkerTransport {
           annotationStorage.resetModified();
         }
       });
+  }
+
+  getFieldObjects() {
+    return this.messageHandler.sendWithPromise("GetFieldObjects", null);
+  }
+
+  hasJSActions() {
+    return (this._hasJSActionsPromise ||= this.messageHandler.sendWithPromise(
+      "HasJSActions",
+      null
+    ));
+  }
+
+  getCalculationOrderIds() {
+    return this.messageHandler.sendWithPromise("GetCalculationOrderIds", null);
   }
 
   getDestinations() {
@@ -2614,11 +2654,14 @@ class WorkerTransport {
         return {
           info: results[0],
           metadata: results[1] ? new Metadata(results[1]) : null,
-          contentDispositionFilename: this._fullReader
-            ? this._fullReader.filename
-            : null,
+          contentDispositionFilename: this._fullReader?.filename ?? null,
+          contentLength: this._fullReader?.contentLength ?? null,
         };
       });
+  }
+
+  getMarkInfo() {
+    return this.messageHandler.sendWithPromise("GetMarkInfo", null);
   }
 
   getStats() {
@@ -2641,6 +2684,7 @@ class WorkerTransport {
       }
       this.commonObjs.clear();
       this.fontLoader.clear();
+      this._hasJSActionsPromise = null;
     });
   }
 
@@ -2829,11 +2873,7 @@ const InternalRenderTask = (function InternalRenderTaskClosure() {
         canvasInRendering.add(this._canvas);
       }
 
-      if (
-        this._pdfBug &&
-        globalThis.StepperManager &&
-        globalThis.StepperManager.enabled
-      ) {
+      if (this._pdfBug && globalThis.StepperManager?.enabled) {
         this.stepper = globalThis.StepperManager.create(this._pageIndex);
         this.stepper.init(this.operatorList);
         this.stepper.nextBreakPoint = this.stepper.getNextBreakPoint();

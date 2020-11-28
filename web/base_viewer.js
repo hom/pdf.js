@@ -13,6 +13,7 @@
  * limitations under the License.
  */
 
+import { createPromiseCapability, version } from "pdfjs-lib";
 import {
   CSS_UNITS,
   DEFAULT_SCALE,
@@ -38,7 +39,6 @@ import {
 } from "./ui_utils.js";
 import { PDFRenderingQueue, RenderingStates } from "./pdf_rendering_queue.js";
 import { AnnotationLayerBuilder } from "./annotation_layer_builder.js";
-import { createPromiseCapability } from "pdfjs-lib";
 import { PDFPageView } from "./pdf_page_view.js";
 import { SimpleLinkService } from "./pdf_link_service.js";
 import { TextLayerBuilder } from "./text_layer_builder.js";
@@ -77,6 +77,8 @@ const DEFAULT_CACHE_SIZE = 10;
  *   total pixels, i.e. width * height. Use -1 for no limit. The default value
  *   is 4096 * 4096 (16 mega-pixels).
  * @property {IL10n} l10n - Localization service.
+ * @property {boolean} [enableScripting] - Enable embedded script execution.
+ *   The default value is `false`.
  */
 
 function PDFPageViewBuffer(size) {
@@ -113,6 +115,10 @@ function PDFPageViewBuffer(size) {
       data.shift().destroy();
     }
   };
+
+  this.has = function (view) {
+    return data.includes(view);
+  };
 }
 
 function isSameScale(oldScale, newScale) {
@@ -139,6 +145,13 @@ class BaseViewer {
     if (this.constructor === BaseViewer) {
       throw new Error("Cannot initialize BaseViewer.");
     }
+    const viewerVersion =
+      typeof PDFJSDev !== "undefined" ? PDFJSDev.eval("BUNDLE_VERSION") : null;
+    if (version !== viewerVersion) {
+      throw new Error(
+        `The API version "${version}" does not match the Viewer version "${viewerVersion}".`
+      );
+    }
     this._name = this.constructor.name;
 
     this.container = options.container;
@@ -150,8 +163,8 @@ class BaseViewer {
     ) {
       if (
         !(
-          this.container instanceof HTMLDivElement &&
-          this.viewer instanceof HTMLDivElement
+          this.container?.tagName.toUpperCase() === "DIV" &&
+          this.viewer?.tagName.toUpperCase() === "DIV"
         )
       ) {
         throw new Error("Invalid `container` and/or `viewer` option.");
@@ -180,6 +193,7 @@ class BaseViewer {
     this.useOnlyCssZoom = options.useOnlyCssZoom || false;
     this.maxCanvasPixels = options.maxCanvasPixels;
     this.l10n = options.l10n || NullL10n;
+    this.enableScripting = options.enableScripting || false;
 
     this.defaultRenderingQueue = !options.renderingQueue;
     if (this.defaultRenderingQueue) {
@@ -455,8 +469,7 @@ class BaseViewer {
     }
     const pagesCount = pdfDocument.numPages;
     const firstPagePromise = pdfDocument.getPage(1);
-
-    const annotationStorage = pdfDocument.annotationStorage;
+    // Rendering (potentially) depends on this, hence fetching it immediately.
     const optionalContentConfigPromise = pdfDocument.getOptionalContentConfig();
 
     this._pagesCapability.promise.then(() => {
@@ -507,7 +520,6 @@ class BaseViewer {
             id: pageNum,
             scale,
             defaultViewport: viewport.clone(),
-            annotationStorage,
             optionalContentConfigPromise,
             renderingQueue: this.renderingQueue,
             textLayerFactory,
@@ -520,6 +532,7 @@ class BaseViewer {
             useOnlyCssZoom: this.useOnlyCssZoom,
             maxCanvasPixels: this.maxCanvasPixels,
             l10n: this.l10n,
+            enableScripting: this.enableScripting,
           });
           this._pages.push(pageView);
         }
@@ -781,6 +794,22 @@ class BaseViewer {
   }
 
   /**
+   * @param {string} label - The page label.
+   * @returns {number|null} The page number corresponding to the page label,
+   *   or `null` when no page labels exist and/or the input is invalid.
+   */
+  pageLabelToPageNumber(label) {
+    if (!this._pageLabels) {
+      return null;
+    }
+    const i = this._pageLabels.indexOf(label);
+    if (i < 0) {
+      return null;
+    }
+    return i + 1;
+  }
+
+  /**
    * @typedef ScrollPageIntoViewParameters
    * @property {number} pageNumber - The page number.
    * @property {Array} [destArray] - The original PDF destination array, in the
@@ -1004,6 +1033,10 @@ class BaseViewer {
       : this._scrollMode === ScrollMode.HORIZONTAL;
   }
 
+  get _isContainerRtl() {
+    return getComputedStyle(this.container).direction === "rtl";
+  }
+
   get isInPresentationMode() {
     return this.presentationModeState === PresentationModeState.FULLSCREEN;
   }
@@ -1049,12 +1082,13 @@ class BaseViewer {
   }
 
   _getVisiblePages() {
-    return getVisibleElements(
-      this.container,
-      this._pages,
-      true,
-      this._isScrollModeHorizontal
-    );
+    return getVisibleElements({
+      scrollEl: this.container,
+      views: this._pages,
+      sortByVisibility: true,
+      horizontal: this._isScrollModeHorizontal,
+      rtl: this._isScrollModeHorizontal && this._isContainerRtl,
+    });
   }
 
   /**
@@ -1064,15 +1098,47 @@ class BaseViewer {
     if (!this.pdfDocument) {
       return false;
     }
-    if (pageNumber < 1 || pageNumber > this.pagesCount) {
+    if (
+      !(
+        Number.isInteger(pageNumber) &&
+        pageNumber > 0 &&
+        pageNumber <= this.pagesCount
+      )
+    ) {
       console.error(
-        `${this._name}.isPageVisible: "${pageNumber}" is out of bounds.`
+        `${this._name}.isPageVisible: "${pageNumber}" is not a valid page.`
       );
       return false;
     }
     return this._getVisiblePages().views.some(function (view) {
       return view.id === pageNumber;
     });
+  }
+
+  /**
+   * @param {number} pageNumber
+   */
+  isPageCached(pageNumber) {
+    if (!this.pdfDocument || !this._buffer) {
+      return false;
+    }
+    if (
+      !(
+        Number.isInteger(pageNumber) &&
+        pageNumber > 0 &&
+        pageNumber <= this.pagesCount
+      )
+    ) {
+      console.error(
+        `${this._name}.isPageCached: "${pageNumber}" is not a valid page.`
+      );
+      return false;
+    }
+    const pageView = this._pages[pageNumber - 1];
+    if (!pageView) {
+      return false;
+    }
+    return this._buffer.has(pageView);
   }
 
   cleanup() {
@@ -1176,10 +1242,14 @@ class BaseViewer {
   /**
    * @param {HTMLDivElement} pageDiv
    * @param {PDFPage} pdfPage
+   * @param {AnnotationStorage} [annotationStorage] - Storage for annotation
+   *   data in forms.
    * @param {string} [imageResourcesPath] - Path for image resources, mainly
    *   for annotation icons. Include trailing slash.
    * @param {boolean} renderInteractiveForms
    * @param {IL10n} l10n
+   * @param {boolean} [enableScripting]
+   * @param {Promise<boolean>} [hasJSActionsPromise]
    * @returns {AnnotationLayerBuilder}
    */
   createAnnotationLayerBuilder(
@@ -1188,17 +1258,23 @@ class BaseViewer {
     annotationStorage = null,
     imageResourcesPath = "",
     renderInteractiveForms = false,
-    l10n = NullL10n
+    l10n = NullL10n,
+    enableScripting = false,
+    hasJSActionsPromise = null
   ) {
     return new AnnotationLayerBuilder({
       pageDiv,
       pdfPage,
-      annotationStorage,
+      annotationStorage:
+        annotationStorage || this.pdfDocument?.annotationStorage,
       imageResourcesPath,
       renderInteractiveForms,
       linkService: this.linkService,
       downloadManager: this.downloadManager,
       l10n,
+      enableScripting,
+      hasJSActionsPromise:
+        hasJSActionsPromise || this.pdfDocument?.hasJSActions(),
     });
   }
 

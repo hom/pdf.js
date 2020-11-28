@@ -12,6 +12,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+/* eslint-disable no-var */
 
 import {
   assert,
@@ -622,7 +623,7 @@ var Font = (function FontClosure() {
         // attempting to recover by assuming that no file exists.
         warn('Font file is empty in "' + name + '" (' + this.loadedName + ")");
       }
-      this.fallbackToSystemFont();
+      this.fallbackToSystemFont(properties);
       return;
     }
 
@@ -679,7 +680,7 @@ var Font = (function FontClosure() {
       }
     } catch (e) {
       warn(e);
-      this.fallbackToSystemFont();
+      this.fallbackToSystemFont(properties);
       return;
     }
 
@@ -1308,7 +1309,7 @@ var Font = (function FontClosure() {
       return data;
     },
 
-    fallbackToSystemFont: function Font_fallbackToSystemFont() {
+    fallbackToSystemFont(properties) {
       this.missingFile = true;
       // The file data is not specified. Trying to fix the font name
       // to be used with the canvas.font.
@@ -1339,7 +1340,8 @@ var Font = (function FontClosure() {
         type === "CIDFontType2" &&
         this.cidEncoding.startsWith("Identity-")
       ) {
-        const GlyphMapForStandardFonts = getGlyphMapForStandardFonts();
+        const GlyphMapForStandardFonts = getGlyphMapForStandardFonts(),
+          cidToGidMap = properties.cidToGidMap;
         // Standard fonts might be embedded as CID font without glyph mapping.
         // Building one based on GlyphMapForStandardFonts.
         const map = [];
@@ -1355,6 +1357,16 @@ var Font = (function FontClosure() {
           const SupplementalGlyphMapForCalibri = getSupplementalGlyphMapForCalibri();
           for (const charCode in SupplementalGlyphMapForCalibri) {
             map[+charCode] = SupplementalGlyphMapForCalibri[charCode];
+          }
+        }
+        // Always update the glyph mapping with the `cidToGidMap` when it exists
+        // (fixes issue12418_reduced.pdf).
+        if (cidToGidMap) {
+          for (const charCode in map) {
+            const cid = map[charCode];
+            if (cidToGidMap[cid] !== undefined) {
+              map[+charCode] = cidToGidMap[cid];
+            }
           }
         }
 
@@ -3196,7 +3208,10 @@ var Font = (function FontClosure() {
       return shadow(this, "spaceWidth", width);
     },
 
-    charToGlyph: function Font_charToGlyph(charcode, isSpace) {
+    /**
+     * @private
+     */
+    _charToGlyph(charcode, isSpace = false) {
       var fontCharCode, width, operatorListId;
 
       var widthCode = charcode;
@@ -3320,13 +3335,13 @@ var Font = (function FontClosure() {
           i += length;
           // Space is char with code 0x20 and length 1 in multiple-byte codes.
           var isSpace = length === 1 && chars.charCodeAt(i - 1) === 0x20;
-          glyph = this.charToGlyph(charcode, isSpace);
+          glyph = this._charToGlyph(charcode, isSpace);
           glyphs.push(glyph);
         }
       } else {
         for (i = 0, ii = chars.length; i < ii; ++i) {
           charcode = chars.charCodeAt(i);
-          glyph = this.charToGlyph(charcode, charcode === 0x20);
+          glyph = this._charToGlyph(charcode, charcode === 0x20);
           glyphs.push(glyph);
         }
       }

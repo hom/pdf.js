@@ -14,6 +14,8 @@
  */
 
 import { DefaultExternalServices, PDFViewerApplication } from "./app.js";
+import { loadScript, shadow } from "pdfjs-lib";
+import { AppOptions } from "./app_options.js";
 import { BasePreferences } from "./preferences.js";
 import { DownloadManager } from "./download_manager.js";
 import { GenericL10n } from "./genericl10n.js";
@@ -39,7 +41,7 @@ class GenericPreferences extends BasePreferences {
 
 class GenericExternalServices extends DefaultExternalServices {
   static createDownloadManager(options) {
-    return new DownloadManager(options);
+    return new DownloadManager();
   }
 
   static createPreferences() {
@@ -48,6 +50,25 @@ class GenericExternalServices extends DefaultExternalServices {
 
   static createL10n({ locale = "en-US" }) {
     return new GenericL10n(locale);
+  }
+
+  static get scripting() {
+    const promise = loadScript(AppOptions.get("scriptingSrc")).then(() => {
+      return window.pdfjsSandbox.QuickJSSandbox();
+    });
+    const sandbox = {
+      createSandbox(data) {
+        promise.then(sbx => sbx.create(data));
+      },
+      dispatchEventInSandbox(event) {
+        promise.then(sbx => sbx.dispatchEvent(event));
+      },
+      destroySandbox() {
+        promise.then(sbx => sbx.nukeSandbox());
+      },
+    };
+
+    return shadow(this, "scripting", sandbox);
   }
 }
 PDFViewerApplication.externalServices = GenericExternalServices;

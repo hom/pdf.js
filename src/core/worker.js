@@ -12,6 +12,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+/* eslint-disable no-var */
 
 import {
   AbortException,
@@ -142,13 +143,14 @@ class WorkerMessageHandler {
       // `ReadableStream` and `Promise.allSettled`).
       if (
         (typeof PDFJSDev === "undefined" || PDFJSDev.test("SKIP_BABEL")) &&
-        (typeof ReadableStream === "undefined" ||
+        (typeof globalThis === "undefined" ||
+          typeof ReadableStream === "undefined" ||
           typeof Promise.allSettled === "undefined")
       ) {
         throw new Error(
           "The browser/environment lacks native support for critical " +
-            "functionality used by the PDF.js library (e.g. " +
-            "`ReadableStream` and/or `Promise.allSettled`); " +
+            "functionality used by the PDF.js library (e.g. `globalThis`, " +
+            "`ReadableStream`, and/or `Promise.allSettled`); " +
             "please use an ES5-compatible build instead."
         );
       }
@@ -498,6 +500,10 @@ class WorkerMessageHandler {
       ]);
     });
 
+    handler.on("GetMarkInfo", function wphSetupGetMarkInfo(data) {
+      return pdfManager.ensureCatalog("markInfo");
+    });
+
     handler.on("GetData", function wphSetupGetData(data) {
       pdfManager.requestLoadedStream();
       return pdfManager.onLoadedStream().then(function (stream) {
@@ -515,6 +521,18 @@ class WorkerMessageHandler {
       });
     });
 
+    handler.on("GetFieldObjects", function (data) {
+      return pdfManager.ensureDoc("fieldObjects");
+    });
+
+    handler.on("HasJSActions", function (data) {
+      return pdfManager.ensureDoc("hasJSActions");
+    });
+
+    handler.on("GetCalculationOrderIds", function (data) {
+      return pdfManager.ensureDoc("calculationOrderIds");
+    });
+
     handler.on("SaveDocument", function ({
       numPages,
       annotationStorage,
@@ -524,18 +542,32 @@ class WorkerMessageHandler {
       const promises = [
         pdfManager.onLoadedStream(),
         pdfManager.ensureCatalog("acroForm"),
+        pdfManager.ensureDoc("xref"),
+        pdfManager.ensureDoc("startXRef"),
       ];
-      const document = pdfManager.pdfDocument;
+
       for (let pageIndex = 0; pageIndex < numPages; pageIndex++) {
         promises.push(
           pdfManager.getPage(pageIndex).then(function (page) {
             const task = new WorkerTask(`Save: page ${pageIndex}`);
-            return page.save(handler, task, annotationStorage);
+            startWorkerTask(task);
+
+            return page
+              .save(handler, task, annotationStorage)
+              .finally(function () {
+                finishWorkerTask(task);
+              });
           })
         );
       }
 
-      return Promise.all(promises).then(([stream, acroForm, ...refs]) => {
+      return Promise.all(promises).then(function ([
+        stream,
+        acroForm,
+        xref,
+        startXRef,
+        ...refs
+      ]) {
         let newRefs = [];
         for (const ref of refs) {
           newRefs = ref
@@ -561,16 +593,15 @@ class WorkerMessageHandler {
           warn("Unsupported XFA type.");
         }
 
-        const xref = document.xref;
         let newXrefInfo = Object.create(null);
         if (xref.trailer) {
-          // Get string info from Info in order to compute fileId
-          const _info = Object.create(null);
+          // Get string info from Info in order to compute fileId.
+          const infoObj = Object.create(null);
           const xrefInfo = xref.trailer.get("Info") || null;
           if (xrefInfo instanceof Dict) {
             xrefInfo.forEach((key, value) => {
               if (isString(key) && isString(value)) {
-                _info[key] = stringToPDFString(value);
+                infoObj[key] = stringToPDFString(value);
               }
             });
           }
@@ -580,9 +611,9 @@ class WorkerMessageHandler {
             encrypt: xref.trailer.getRaw("Encrypt") || null,
             newRef: xref.getNewRef(),
             infoRef: xref.trailer.getRaw("Info") || null,
-            info: _info,
+            info: infoObj,
             fileIds: xref.trailer.getRaw("ID") || null,
-            startXRef: document.startXRef,
+            startXRef,
             filename,
           };
         }
@@ -598,61 +629,56 @@ class WorkerMessageHandler {
       });
     });
 
-    handler.on(
-      "GetOperatorList",
-      function wphSetupRenderPage(data, sink) {
-        var pageIndex = data.pageIndex;
-        pdfManager.getPage(pageIndex).then(function (page) {
-          var task = new WorkerTask(`GetOperatorList: page ${pageIndex}`);
-          startWorkerTask(task);
+    handler.on("GetOperatorList", function wphSetupRenderPage(data, sink) {
+      var pageIndex = data.pageIndex;
+      pdfManager.getPage(pageIndex).then(function (page) {
+        var task = new WorkerTask(`GetOperatorList: page ${pageIndex}`);
+        startWorkerTask(task);
 
-          // NOTE: Keep this condition in sync with the `info` helper function.
-          const start = verbosity >= VerbosityLevel.INFOS ? Date.now() : 0;
+        // NOTE: Keep this condition in sync with the `info` helper function.
+        const start = verbosity >= VerbosityLevel.INFOS ? Date.now() : 0;
 
-          // Pre compile the pdf page and fetch the fonts/images.
-          page
-            .getOperatorList({
-              handler,
-              sink,
-              task,
-              intent: data.intent,
-              renderInteractiveForms: data.renderInteractiveForms,
-              annotationStorage: data.annotationStorage,
-            })
-            .then(
-              function (operatorListInfo) {
-                finishWorkerTask(task);
+        // Pre compile the pdf page and fetch the fonts/images.
+        page
+          .getOperatorList({
+            handler,
+            sink,
+            task,
+            intent: data.intent,
+            renderInteractiveForms: data.renderInteractiveForms,
+            annotationStorage: data.annotationStorage,
+          })
+          .then(
+            function (operatorListInfo) {
+              finishWorkerTask(task);
 
-                if (start) {
-                  info(
-                    `page=${pageIndex + 1} - getOperatorList: time=` +
-                      `${Date.now() - start}ms, len=${operatorListInfo.length}`
-                  );
-                }
-                sink.close();
-              },
-              function (reason) {
-                finishWorkerTask(task);
-                if (task.terminated) {
-                  return; // ignoring errors from the terminated thread
-                }
-                // For compatibility with older behavior, generating unknown
-                // unsupported feature notification on errors.
-                handler.send("UnsupportedFeature", {
-                  featureId: UNSUPPORTED_FEATURES.errorOperatorList,
-                });
-
-                sink.error(reason);
-
-                // TODO: Should `reason` be re-thrown here (currently that
-                //       casues "Uncaught exception: ..." messages in the
-                //       console)?
+              if (start) {
+                info(
+                  `page=${pageIndex + 1} - getOperatorList: time=` +
+                    `${Date.now() - start}ms, len=${operatorListInfo.length}`
+                );
               }
-            );
-        });
-      },
-      this
-    );
+              sink.close();
+            },
+            function (reason) {
+              finishWorkerTask(task);
+              if (task.terminated) {
+                return; // ignoring errors from the terminated thread
+              }
+              // For compatibility with older behavior, generating unknown
+              // unsupported feature notification on errors.
+              handler.send("UnsupportedFeature", {
+                featureId: UNSUPPORTED_FEATURES.errorOperatorList,
+              });
+
+              sink.error(reason);
+
+              // TODO: Should `reason` be re-thrown here (currently that casues
+              //       "Uncaught exception: ..." messages in the console)?
+            }
+          );
+      });
+    });
 
     handler.on("GetTextContent", function wphExtractText(data, sink) {
       var pageIndex = data.pageIndex;

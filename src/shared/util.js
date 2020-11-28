@@ -12,7 +12,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-/* eslint no-var: error */
 
 import "./compatibility.js";
 
@@ -143,6 +142,28 @@ const AnnotationBorderStyleType = {
   BEVELED: 3,
   INSET: 4,
   UNDERLINE: 5,
+};
+
+const AnnotationActionEventType = {
+  E: "MouseEnter",
+  X: "MouseExit",
+  D: "MouseDown",
+  U: "MouseUp",
+  Fo: "Focus",
+  Bl: "Blur",
+  PO: "PageOpen",
+  PC: "PageClose",
+  PV: "PageVisible",
+  PI: "PageInvisible",
+  K: "Keystroke",
+  F: "Format",
+  V: "Validate",
+  C: "Calculate",
+  WC: "WillClose",
+  WS: "WillSave",
+  DS: "DidSave",
+  WP: "WillPrint",
+  DP: "DidPrint",
 };
 
 const StreamType = {
@@ -564,6 +585,15 @@ function string32(value) {
   );
 }
 
+function objectSize(obj) {
+  return Object.keys(obj).length;
+}
+
+// Ensures that the returned Object has a `null` prototype.
+function objectFromEntries(iterable) {
+  return Object.assign(Object.create(null), Object.fromEntries(iterable));
+}
+
 // Checks the endianness of the platform.
 function isLittleEndian() {
   const buffer8 = new Uint8Array(4);
@@ -592,16 +622,13 @@ const IsEvalSupportedCached = {
   },
 };
 
-const rgbBuf = ["rgb(", 0, ",", 0, ",", 0, ")"];
+const hexNumbers = [...Array(256).keys()].map(n =>
+  n.toString(16).padStart(2, "0")
+);
 
 class Util {
-  // makeCssRgb() can be called thousands of times. Using ´rgbBuf` avoids
-  // creating many intermediate strings.
-  static makeCssRgb(r, g, b) {
-    rgbBuf[1] = r;
-    rgbBuf[3] = g;
-    rgbBuf[5] = b;
-    return rgbBuf.join("");
+  static makeHexColor(r, g, b) {
+    return `#${hexNumbers[r]}${hexNumbers[g]}${hexNumbers[b]}`;
   }
 
   // Concatenates two transformation matrices together and returns the result.
@@ -797,7 +824,7 @@ function escapeString(str) {
   // replace "(", ")", "\n", "\r" and "\"
   // by "\(", "\)", "\\n", "\\r" and "\\"
   // in order to write it in a PDF file.
-  return str.replace(/([\(\)\\\n\r])/g, match => {
+  return str.replace(/([()\\\n\r])/g, match => {
     if (match === "\n") {
       return "\\n";
     } else if (match === "\r") {
@@ -972,6 +999,7 @@ export {
   OPS,
   VerbosityLevel,
   UNSUPPORTED_FEATURES,
+  AnnotationActionEventType,
   AnnotationBorderStyleType,
   AnnotationFieldFlag,
   AnnotationFlag,
@@ -1013,6 +1041,8 @@ export {
   isString,
   isSameOrigin,
   createValidAbsoluteUrl,
+  objectSize,
+  objectFromEntries,
   IsLittleEndianCached,
   IsEvalSupportedCached,
   removeNullCharacters,

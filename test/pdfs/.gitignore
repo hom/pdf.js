@@ -107,6 +107,7 @@
 !bug766086.pdf
 !bug793632.pdf
 !bug1020858.pdf
+!prefilled_f1040.pdf
 !bug1050040.pdf
 !bug1200096.pdf
 !bug1068432.pdf
@@ -169,6 +170,7 @@
 !issue5202.pdf
 !images_1bit_grayscale.pdf
 !issue5280.pdf
+!issue12399_reduced.pdf
 !issue5677.pdf
 !issue5954.pdf
 !issue6612.pdf
@@ -177,6 +179,7 @@
 !devicen.pdf
 !cmykjpeg.pdf
 !issue840.pdf
+!160F-2019.pdf
 !issue4402_reduced.pdf
 !issue845r.pdf
 !issue3405r.pdf
@@ -288,6 +291,7 @@
 !noembed-identity.pdf
 !noembed-identity-2.pdf
 !noembed-jis7.pdf
+!issue12504.pdf
 !noembed-eucjp.pdf
 !noembed-sjis.pdf
 !vertical.pdf
@@ -370,8 +374,10 @@
 !annotation-squiggly-without-appearance.pdf
 !annotation-highlight.pdf
 !annotation-highlight-without-appearance.pdf
+!issue12418_reduced.pdf
 !annotation-freetext.pdf
 !annotation-line.pdf
+!bug1669099.pdf
 !annotation-square-circle.pdf
 !annotation-stamp.pdf
 !annotation-fileattachment.pdf
@@ -396,3 +402,4 @@
 !tiling-pattern-large-steps.pdf
 !issue11555.pdf
 !issue12337.pdf
+!pr12564.pdf

@@ -12,6 +12,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+/* eslint-disable no-var */
 
 import {
   assert,
@@ -24,6 +25,7 @@ import {
   isBool,
   isNum,
   isString,
+  objectSize,
   PermissionFlag,
   shadow,
   stringToPDFString,
@@ -74,6 +76,7 @@ class Catalog {
     this.builtInCMapCache = new Map();
     this.globalImageCache = new GlobalImageCache();
     this.pageKidsCountCache = new RefSetCache();
+    this.nonBlendModesSet = new RefSet();
   }
 
   get version() {
@@ -149,6 +152,47 @@ class Catalog {
       }
     }
     return shadow(this, "metadata", metadata);
+  }
+
+  get markInfo() {
+    let markInfo = null;
+    try {
+      markInfo = this._readMarkInfo();
+    } catch (ex) {
+      if (ex instanceof MissingDataException) {
+        throw ex;
+      }
+      warn("Unable to read mark info.");
+    }
+    return shadow(this, "markInfo", markInfo);
+  }
+
+  /**
+   * @private
+   */
+  _readMarkInfo() {
+    const obj = this._catDict.get("MarkInfo");
+    if (!isDict(obj)) {
+      return null;
+    }
+
+    const markInfo = Object.assign(Object.create(null), {
+      Marked: false,
+      UserProperties: false,
+      Suspects: false,
+    });
+    for (const key in markInfo) {
+      if (!obj.has(key)) {
+        continue;
+      }
+      const value = obj.get(key);
+      if (!isBool(value)) {
+        continue;
+      }
+      markInfo[key] = value;
+    }
+
+    return markInfo;
   }
 
   get toplevelPagesDict() {
@@ -785,7 +829,7 @@ class Catalog {
    */
   get openAction() {
     const obj = this._catDict.get("OpenAction");
-    let openAction = null;
+    const openAction = Object.create(null);
 
     if (isDict(obj)) {
       // Convert the OpenAction dictionary into a format that works with
@@ -797,23 +841,18 @@ class Catalog {
       Catalog.parseDestDictionary({ destDict, resultObj });
 
       if (Array.isArray(resultObj.dest)) {
-        if (!openAction) {
-          openAction = Object.create(null);
-        }
         openAction.dest = resultObj.dest;
       } else if (resultObj.action) {
-        if (!openAction) {
-          openAction = Object.create(null);
-        }
         openAction.action = resultObj.action;
       }
     } else if (Array.isArray(obj)) {
-      if (!openAction) {
-        openAction = Object.create(null);
-      }
       openAction.dest = obj;
     }
-    return shadow(this, "openAction", openAction);
+    return shadow(
+      this,
+      "openAction",
+      objectSize(openAction) > 0 ? openAction : null
+    );
   }
 
   get attachments() {
@@ -899,6 +938,7 @@ class Catalog {
     clearPrimitiveCaches();
     this.globalImageCache.clear(/* onlyData = */ manuallyTriggered);
     this.pageKidsCountCache.clear();
+    this.nonBlendModesSet.clear();
 
     const promises = [];
     this.fontCache.forEach(function (promise) {
@@ -907,7 +947,7 @@ class Catalog {
 
     return Promise.all(promises).then(translatedFonts => {
       for (const { dict } of translatedFonts) {
-        delete dict.translated;
+        delete dict.cacheKey;
       }
       this.fontCache.clear();
       this.builtInCMapCache.clear();
@@ -1164,10 +1204,23 @@ class Catalog {
     let action = destDict.get("A"),
       url,
       dest;
-    if (!isDict(action) && destDict.has("Dest")) {
-      // A /Dest entry should *only* contain a Name or an Array, but some bad
-      // PDF generators ignore that and treat it as an /A entry.
-      action = destDict.get("Dest");
+    if (!isDict(action)) {
+      if (destDict.has("Dest")) {
+        // A /Dest entry should *only* contain a Name or an Array, but some bad
+        // PDF generators ignore that and treat it as an /A entry.
+        action = destDict.get("Dest");
+      } else {
+        action = destDict.get("AA");
+        if (isDict(action)) {
+          if (action.has("D")) {
+            // MouseDown
+            action = action.get("D");
+          } else if (action.has("U")) {
+            // MouseUp
+            action = action.get("U");
+          }
+        }
+      }
     }
 
     if (isDict(action)) {
@@ -1783,14 +1836,13 @@ var XRef = (function XRefClosure() {
         }
       }
       // reading XRef streams
-      var i, ii;
-      for (i = 0, ii = xrefStms.length; i < ii; ++i) {
+      for (let i = 0, ii = xrefStms.length; i < ii; ++i) {
         this.startXRefQueue.push(xrefStms[i]);
         this.readXRef(/* recoveryMode */ true);
       }
       // finding main trailer
       let trailerDict;
-      for (i = 0, ii = trailers.length; i < ii; ++i) {
+      for (let i = 0, ii = trailers.length; i < ii; ++i) {
         stream.pos = trailers[i];
         const parser = new Parser({
           lexer: new Lexer(stream),
@@ -1808,16 +1860,24 @@ var XRef = (function XRefClosure() {
           continue;
         }
         // Do some basic validation of the trailer/root dictionary candidate.
-        let rootDict;
         try {
-          rootDict = dict.get("Root");
+          const rootDict = dict.get("Root");
+          if (!(rootDict instanceof Dict)) {
+            continue;
+          }
+          const pagesDict = rootDict.get("Pages");
+          if (!(pagesDict instanceof Dict)) {
+            continue;
+          }
+          const pagesCount = pagesDict.get("Count");
+          if (!Number.isInteger(pagesCount)) {
+            continue;
+          }
+          // The top-level /Pages dictionary isn't obviously corrupt.
         } catch (ex) {
           if (ex instanceof MissingDataException) {
             throw ex;
           }
-          continue;
-        }
-        if (!isDict(rootDict) || !rootDict.has("Pages")) {
           continue;
         }
         // taking the first one with 'ID'

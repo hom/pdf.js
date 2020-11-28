@@ -13,7 +13,6 @@
  * limitations under the License.
  */
 /* globals __non_webpack_require__ */
-/* eslint no-var: error */
 
 import {
   createObjectURL,
@@ -1016,8 +1015,7 @@ if (typeof PDFJSDev === "undefined" || PDFJSDev.test("GENERIC")) {
       const current = this.current;
       if (
         current.textRenderingMode & TextRenderingMode.ADD_TO_PATH_FLAG &&
-        current.txtElement &&
-        current.txtElement.hasChildNodes()
+        current.txtElement?.hasChildNodes()
       ) {
         // If no glyphs are shown (i.e. no child nodes), no clipping occurs.
         current.element = current.txtElement;
@@ -1050,7 +1048,7 @@ if (typeof PDFJSDev === "undefined" || PDFJSDev.test("GENERIC")) {
     }
 
     setStrokeRGBColor(r, g, b) {
-      this.current.strokeColor = Util.makeCssRgb(r, g, b);
+      this.current.strokeColor = Util.makeHexColor(r, g, b);
     }
 
     setFillAlpha(fillAlpha) {
@@ -1058,7 +1056,7 @@ if (typeof PDFJSDev === "undefined" || PDFJSDev.test("GENERIC")) {
     }
 
     setFillRGBColor(r, g, b) {
-      this.current.fillColor = Util.makeCssRgb(r, g, b);
+      this.current.fillColor = Util.makeHexColor(r, g, b);
       this.current.tspan = this.svgFactory.createElement("svg:tspan");
       this.current.xcoords = [];
       this.current.ycoords = [];
@@ -1144,7 +1142,7 @@ if (typeof PDFJSDev === "undefined" || PDFJSDev.test("GENERIC")) {
       this.svg = bbox;
       this.transformMatrix = matrix;
       if (paintType === 2) {
-        const cssColor = Util.makeCssRgb(...color);
+        const cssColor = Util.makeHexColor(...color);
         this.current.fillColor = cssColor;
         this.current.strokeColor = cssColor;
       }

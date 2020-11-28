@@ -13,7 +13,18 @@
  * limitations under the License.
  */
 
-"use strict";
+import { AppOptions } from "./app_options.js";
+import { PDFViewerApplication } from "./app.js";
+
+/* eslint-disable-next-line no-unused-vars */
+const pdfjsVersion =
+  typeof PDFJSDev !== "undefined" ? PDFJSDev.eval("BUNDLE_VERSION") : void 0;
+/* eslint-disable-next-line no-unused-vars */
+const pdfjsBuild =
+  typeof PDFJSDev !== "undefined" ? PDFJSDev.eval("BUNDLE_BUILD") : void 0;
+
+window.PDFViewerApplication = PDFViewerApplication;
+window.PDFViewerApplicationOptions = AppOptions;
 
 if (typeof PDFJSDev !== "undefined" && PDFJSDev.test("CHROME")) {
   var defaultUrl; // eslint-disable-line no-var
@@ -35,12 +46,6 @@ if (typeof PDFJSDev !== "undefined" && PDFJSDev.test("CHROME")) {
   })();
 }
 
-let pdfjsWebApp, pdfjsWebAppOptions;
-if (typeof PDFJSDev !== "undefined" && PDFJSDev.test("PRODUCTION")) {
-  pdfjsWebApp = require("./app.js");
-  pdfjsWebAppOptions = require("./app_options.js");
-}
-
 if (typeof PDFJSDev !== "undefined" && PDFJSDev.test("MOZCENTRAL")) {
   require("./firefoxcom.js");
   require("./firefox_print_service.js");
@@ -50,6 +55,9 @@ if (typeof PDFJSDev !== "undefined" && PDFJSDev.test("GENERIC")) {
 }
 if (typeof PDFJSDev !== "undefined" && PDFJSDev.test("CHROME")) {
   require("./chromecom.js");
+}
+if (typeof PDFJSDev === "undefined") {
+  import("./devcom.js");
 }
 if (typeof PDFJSDev !== "undefined" && PDFJSDev.test("CHROME || GENERIC")) {
   require("./pdf_print_service.js");
@@ -191,22 +199,15 @@ function webViewerLoad() {
   const config = getViewerConfiguration();
   if (typeof PDFJSDev === "undefined" || !PDFJSDev.test("PRODUCTION")) {
     Promise.all([
-      import("pdfjs-web/app.js"),
-      import("pdfjs-web/app_options.js"),
       import("pdfjs-web/genericcom.js"),
       import("pdfjs-web/pdf_print_service.js"),
-    ]).then(function ([app, appOptions, genericCom, pdfPrintService]) {
-      window.PDFViewerApplication = app.PDFViewerApplication;
-      window.PDFViewerApplicationOptions = appOptions.AppOptions;
-      app.PDFViewerApplication.run(config);
+    ]).then(function ([genericCom, pdfPrintService]) {
+      PDFViewerApplication.run(config);
     });
   } else {
     if (typeof PDFJSDev !== "undefined" && PDFJSDev.test("CHROME")) {
-      pdfjsWebAppOptions.AppOptions.set("defaultUrl", defaultUrl);
+      AppOptions.set("defaultUrl", defaultUrl);
     }
-
-    window.PDFViewerApplication = pdfjsWebApp.PDFViewerApplication;
-    window.PDFViewerApplicationOptions = pdfjsWebAppOptions.AppOptions;
 
     if (typeof PDFJSDev !== "undefined" && PDFJSDev.test("GENERIC")) {
       // Give custom implementations of the default viewer a simpler way to
@@ -229,7 +230,7 @@ function webViewerLoad() {
       }
     }
 
-    pdfjsWebApp.PDFViewerApplication.run(config);
+    PDFViewerApplication.run(config);
   }
 }
 
@@ -241,3 +242,5 @@ if (
 } else {
   document.addEventListener("DOMContentLoaded", webViewerLoad, true);
 }
+
+export { PDFViewerApplication, AppOptions as PDFViewerApplicationOptions };

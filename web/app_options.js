@@ -65,6 +65,11 @@ const defaultOptions = {
     value: false,
     kind: OptionKind.VIEWER + OptionKind.PREFERENCE,
   },
+  enableScripting: {
+    /** @type {boolean} */
+    value: false,
+    kind: OptionKind.VIEWER + OptionKind.PREFERENCE,
+  },
   enableWebGL: {
     /** @type {boolean} */
     value: false,
@@ -149,6 +154,11 @@ const defaultOptions = {
     value: false,
     kind: OptionKind.VIEWER + OptionKind.PREFERENCE,
   },
+  viewerCssTheme: {
+    /** @type {number} */
+    value: 0,
+    kind: OptionKind.VIEWER + OptionKind.PREFERENCE,
+  },
   viewOnLoad: {
     /** @type {boolean} */
     value: 0,
@@ -212,6 +222,14 @@ const defaultOptions = {
     /** @type {boolean} */
     value: false,
     kind: OptionKind.API,
+  },
+  scriptingSrc: {
+    /** @type {string} */
+    value:
+      typeof PDFJSDev === "undefined" || !PDFJSDev.test("PRODUCTION")
+        ? "../build/generic/build/pdf.sandbox.js"
+        : "../build/pdf.sandbox.js",
+    kind: OptionKind.VIEWER,
   },
   verbosity: {
     /** @type {number} */
@@ -302,6 +320,12 @@ class AppOptions {
 
   static set(name, value) {
     userOptions[name] = value;
+  }
+
+  static setAll(options) {
+    for (const name in options) {
+      userOptions[name] = options[name];
+    }
   }
 
   static remove(name) {

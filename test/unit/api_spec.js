@@ -15,8 +15,7 @@
 
 import {
   buildGetDocumentParams,
-  DOMFileReaderFactory,
-  NodeFileReaderFactory,
+  DefaultFileReaderFactory,
   TEST_PDFS_PATH,
 } from "./test_utils.js";
 import {
@@ -32,23 +31,22 @@ import {
   StreamType,
 } from "../../src/shared/util.js";
 import {
-  DOMCanvasFactory,
-  RenderingCancelledException,
-  StatTimer,
-} from "../../src/display/display_utils.js";
-import {
+  DefaultCanvasFactory,
   getDocument,
   PDFDataRangeTransport,
   PDFDocumentProxy,
   PDFPageProxy,
   PDFWorker,
 } from "../../src/display/api.js";
+import {
+  RenderingCancelledException,
+  StatTimer,
+} from "../../src/display/display_utils.js";
 import { AutoPrintRegExp } from "../../web/ui_utils.js";
 import { GlobalImageCache } from "../../src/core/image_utils.js";
 import { GlobalWorkerOptions } from "../../src/display/worker_options.js";
 import { isNodeJS } from "../../src/shared/is_node.js";
 import { Metadata } from "../../src/display/metadata.js";
-import { NodeCanvasFactory } from "../../src/display/node_utils.js";
 
 describe("api", function () {
   const basicApiFileName = "basicapi.pdf";
@@ -57,18 +55,12 @@ describe("api", function () {
 
   let CanvasFactory;
 
-  beforeAll(function (done) {
-    if (isNodeJS) {
-      CanvasFactory = new NodeCanvasFactory();
-    } else {
-      CanvasFactory = new DOMCanvasFactory();
-    }
-    done();
+  beforeAll(function () {
+    CanvasFactory = new DefaultCanvasFactory();
   });
 
-  afterAll(function (done) {
+  afterAll(function () {
     CanvasFactory = null;
-    done();
   });
 
   function waitSome(callback) {
@@ -79,6 +71,36 @@ describe("api", function () {
   }
 
   describe("getDocument", function () {
+    it("creates pdf doc from URL-string", async function () {
+      const urlStr = TEST_PDFS_PATH + basicApiFileName;
+      const loadingTask = getDocument(urlStr);
+      const pdfDocument = await loadingTask.promise;
+
+      expect(typeof urlStr).toEqual("string");
+      expect(pdfDocument instanceof PDFDocumentProxy).toEqual(true);
+      expect(pdfDocument.numPages).toEqual(3);
+
+      await loadingTask.destroy();
+    });
+
+    it("creates pdf doc from URL-object", async function () {
+      if (isNodeJS) {
+        pending("window.location is not supported in Node.js.");
+      }
+      const urlObj = new URL(
+        TEST_PDFS_PATH + basicApiFileName,
+        window.location
+      );
+      const loadingTask = getDocument(urlObj);
+      const pdfDocument = await loadingTask.promise;
+
+      expect(urlObj instanceof URL).toEqual(true);
+      expect(pdfDocument instanceof PDFDocumentProxy).toEqual(true);
+      expect(pdfDocument.numPages).toEqual(3);
+
+      await loadingTask.destroy();
+    });
+
     it("creates pdf doc from URL", function (done) {
       const loadingTask = getDocument(basicApiGetDocumentParams);
 
@@ -132,16 +154,9 @@ describe("api", function () {
         .catch(done.fail);
     });
     it("creates pdf doc from typed array", function (done) {
-      let typedArrayPdfPromise;
-      if (isNodeJS) {
-        typedArrayPdfPromise = NodeFileReaderFactory.fetch({
-          path: TEST_PDFS_PATH.node + basicApiFileName,
-        });
-      } else {
-        typedArrayPdfPromise = DOMFileReaderFactory.fetch({
-          path: TEST_PDFS_PATH.dom + basicApiFileName,
-        });
-      }
+      const typedArrayPdfPromise = DefaultFileReaderFactory.fetch({
+        path: TEST_PDFS_PATH + basicApiFileName,
+      });
 
       typedArrayPdfPromise
         .then(typedArrayPdf => {
@@ -182,6 +197,10 @@ describe("api", function () {
         });
     });
     it("creates pdf doc from non-existent URL", function (done) {
+      if (!isNodeJS) {
+        // re-enable https://github.com/mozilla/pdf.js/issues/13061
+        pending("Fails intermittently on linux in browsers.");
+      }
       const loadingTask = getDocument(
         buildGetDocumentParams("non-existent.pdf")
       );
@@ -1006,27 +1025,33 @@ describe("api", function () {
     });
     it("gets JSActions", function (done) {
       // PDF document with "JavaScript" action in the OpenAction dictionary.
-      const loadingTask = getDocument(buildGetDocumentParams("docactions.pdf"));
+      const loadingTask = getDocument(
+        buildGetDocumentParams("doc_actions.pdf")
+      );
       const promise = loadingTask.promise.then(async pdfDoc => {
         const docActions = await pdfDoc.getJSActions();
-        const page5 = await pdfDoc.getPage(5);
-        const page12 = await pdfDoc.getPage(12);
-        const page5Actions = await page5.getJSActions();
-        const page12Actions = await page12.getJSActions();
-        return [docActions, page5Actions, page12Actions];
+        const page1 = await pdfDoc.getPage(1);
+        const page3 = await pdfDoc.getPage(3);
+        const page1Actions = await page1.getJSActions();
+        const page3Actions = await page3.getJSActions();
+        return [docActions, page1Actions, page3Actions];
       });
       promise
-        .then(async ([docActions, page5Actions, page12Actions]) => {
+        .then(async ([docActions, page1Actions, page3Actions]) => {
           expect(docActions).toEqual({
-            Open: ["console.println('Open Action');"],
+            DidPrint: [`this.getField("Text2").value = "DidPrint";`],
+            DidSave: [`this.getField("Text2").value = "DidSave";`],
+            WillClose: [`this.getField("Text1").value = "WillClose";`],
+            WillPrint: [`this.getField("Text1").value = "WillPrint";`],
+            WillSave: [`this.getField("Text1").value = "WillSave";`],
           });
-          expect(page5Actions).toEqual({
-            PageOpen: ["console.println('Open page 5');"],
-            PageClose: ["console.println('Close page 5');"],
+          expect(page1Actions).toEqual({
+            PageOpen: [`this.getField("Text1").value = "PageOpen 1";`],
+            PageClose: [`this.getField("Text2").value = "PageClose 1";`],
           });
-          expect(page12Actions).toEqual({
-            PageOpen: ["console.println('Open page 12');"],
-            PageClose: ["console.println('Close page 12');"],
+          expect(page3Actions).toEqual({
+            PageOpen: [`this.getField("Text5").value = "PageOpen 3";`],
+            PageClose: [`this.getField("Text6").value = "PageClose 3";`],
           });
           loadingTask.destroy().then(done);
         })
@@ -1185,6 +1210,7 @@ describe("api", function () {
           expect(info.IsAcroFormPresent).toEqual(false);
           expect(info.IsXFAPresent).toEqual(false);
           expect(info.IsCollectionPresent).toEqual(false);
+          expect(info.IsSignaturesPresent).toEqual(false);
 
           expect(metadata instanceof Metadata).toEqual(true);
           expect(metadata.get("dc:title")).toEqual("Basic API Test");
@@ -1227,6 +1253,7 @@ describe("api", function () {
           expect(info.IsAcroFormPresent).toEqual(false);
           expect(info.IsXFAPresent).toEqual(false);
           expect(info.IsCollectionPresent).toEqual(false);
+          expect(info.IsSignaturesPresent).toEqual(false);
 
           expect(metadata).toEqual(null);
           expect(contentDispositionFilename).toEqual(null);
@@ -1255,6 +1282,7 @@ describe("api", function () {
           expect(info.IsAcroFormPresent).toEqual(false);
           expect(info.IsXFAPresent).toEqual(false);
           expect(info.IsCollectionPresent).toEqual(false);
+          expect(info.IsSignaturesPresent).toEqual(false);
 
           expect(metadata).toEqual(null);
           expect(contentDispositionFilename).toEqual(null);
@@ -1312,12 +1340,10 @@ describe("api", function () {
         .catch(done.fail);
     });
 
-    it("cleans up document resources", function (done) {
-      const promise = pdfDocument.cleanup();
-      promise.then(function () {
-        expect(true).toEqual(true);
-        done();
-      }, done.fail);
+    it("cleans up document resources", async function () {
+      await pdfDocument.cleanup();
+
+      expect(true).toEqual(true);
     });
 
     it("checks that fingerprints are unique", function (done) {
@@ -1676,6 +1702,69 @@ describe("api", function () {
         .catch(done.fail);
     });
 
+    it("gets empty structure tree", async function () {
+      const tree = await page.getStructTree();
+
+      expect(tree).toEqual(null);
+    });
+    it("gets simple structure tree", async function () {
+      const loadingTask = getDocument(
+        buildGetDocumentParams("structure_simple.pdf")
+      );
+      const pdfDoc = await loadingTask.promise;
+      const pdfPage = await pdfDoc.getPage(1);
+      const tree = await pdfPage.getStructTree();
+
+      expect(tree).toEqual({
+        role: "Root",
+        children: [
+          {
+            role: "Document",
+            children: [
+              {
+                role: "H1",
+                children: [
+                  {
+                    role: "NonStruct",
+                    children: [{ type: "content", id: "page2R_mcid0" }],
+                  },
+                ],
+              },
+              {
+                role: "P",
+                children: [
+                  {
+                    role: "NonStruct",
+                    children: [{ type: "content", id: "page2R_mcid1" }],
+                  },
+                ],
+              },
+              {
+                role: "H2",
+                children: [
+                  {
+                    role: "NonStruct",
+                    children: [{ type: "content", id: "page2R_mcid2" }],
+                  },
+                ],
+              },
+              {
+                role: "P",
+                children: [
+                  {
+                    role: "NonStruct",
+                    children: [{ type: "content", id: "page2R_mcid3" }],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      });
+
+      await loadingTask.destroy();
+    });
+
     it("gets operator list", function (done) {
       const promise = page.getOperatorList();
       promise
@@ -1955,159 +2044,135 @@ describe("api", function () {
       ]).then(done);
     });
 
-    it("cleans up document resources after rendering of page", function (done) {
+    it("cleans up document resources after rendering of page", async function () {
       const loadingTask = getDocument(buildGetDocumentParams(basicApiFileName));
-      let canvasAndCtx;
+      const pdfDoc = await loadingTask.promise;
+      const pdfPage = await pdfDoc.getPage(1);
 
-      loadingTask.promise
-        .then(pdfDoc => {
-          return pdfDoc.getPage(1).then(pdfPage => {
-            const viewport = pdfPage.getViewport({ scale: 1 });
-            canvasAndCtx = CanvasFactory.create(
-              viewport.width,
-              viewport.height
-            );
+      const viewport = pdfPage.getViewport({ scale: 1 });
+      const canvasAndCtx = CanvasFactory.create(
+        viewport.width,
+        viewport.height
+      );
 
-            const renderTask = pdfPage.render({
-              canvasContext: canvasAndCtx.context,
-              canvasFactory: CanvasFactory,
-              viewport,
-            });
-            return renderTask.promise.then(() => {
-              return pdfDoc.cleanup();
-            });
-          });
-        })
-        .then(() => {
-          expect(true).toEqual(true);
+      const renderTask = pdfPage.render({
+        canvasContext: canvasAndCtx.context,
+        canvasFactory: CanvasFactory,
+        viewport,
+      });
+      await renderTask.promise;
 
-          CanvasFactory.destroy(canvasAndCtx);
-          loadingTask.destroy().then(done);
-        }, done.fail);
+      await pdfDoc.cleanup();
+
+      expect(true).toEqual(true);
+
+      CanvasFactory.destroy(canvasAndCtx);
+      await loadingTask.destroy();
     });
 
-    it("cleans up document resources during rendering of page", function (done) {
+    it("cleans up document resources during rendering of page", async function () {
       const loadingTask = getDocument(
         buildGetDocumentParams("tracemonkey.pdf")
       );
-      let canvasAndCtx;
+      const pdfDoc = await loadingTask.promise;
+      const pdfPage = await pdfDoc.getPage(1);
 
-      loadingTask.promise
-        .then(pdfDoc => {
-          return pdfDoc.getPage(1).then(pdfPage => {
-            const viewport = pdfPage.getViewport({ scale: 1 });
-            canvasAndCtx = CanvasFactory.create(
-              viewport.width,
-              viewport.height
-            );
+      const viewport = pdfPage.getViewport({ scale: 1 });
+      const canvasAndCtx = CanvasFactory.create(
+        viewport.width,
+        viewport.height
+      );
 
-            const renderTask = pdfPage.render({
-              canvasContext: canvasAndCtx.context,
-              canvasFactory: CanvasFactory,
-              viewport,
-            });
+      const renderTask = pdfPage.render({
+        canvasContext: canvasAndCtx.context,
+        canvasFactory: CanvasFactory,
+        viewport,
+      });
+      // Ensure that clean-up runs during rendering.
+      renderTask.onContinue = function (cont) {
+        waitSome(cont);
+      };
 
-            renderTask.onContinue = function (cont) {
-              waitSome(cont);
-            };
+      try {
+        await pdfDoc.cleanup();
 
-            return pdfDoc
-              .cleanup()
-              .then(
-                () => {
-                  throw new Error("shall fail cleanup");
-                },
-                reason => {
-                  expect(reason instanceof Error).toEqual(true);
-                  expect(reason.message).toEqual(
-                    "startCleanup: Page 1 is currently rendering."
-                  );
-                }
-              )
-              .then(() => {
-                return renderTask.promise;
-              })
-              .then(() => {
-                CanvasFactory.destroy(canvasAndCtx);
-                loadingTask.destroy().then(done);
-              });
-          });
-        })
-        .catch(done.fail);
+        throw new Error("shall fail cleanup");
+      } catch (reason) {
+        expect(reason instanceof Error).toEqual(true);
+        expect(reason.message).toEqual(
+          "startCleanup: Page 1 is currently rendering."
+        );
+      }
+      await renderTask.promise;
+
+      CanvasFactory.destroy(canvasAndCtx);
+      await loadingTask.destroy();
     });
 
-    it("caches image resources at the document/page level as expected (issue 11878)", async function (done) {
+    it("caches image resources at the document/page level as expected (issue 11878)", async function () {
       const { NUM_PAGES_THRESHOLD } = GlobalImageCache,
         EXPECTED_WIDTH = 2550,
         EXPECTED_HEIGHT = 3300;
 
       const loadingTask = getDocument(buildGetDocumentParams("issue11878.pdf"));
+      const pdfDoc = await loadingTask.promise;
       let firstImgData = null;
 
-      try {
-        const pdfDoc = await loadingTask.promise;
+      for (let i = 1; i <= pdfDoc.numPages; i++) {
+        const pdfPage = await pdfDoc.getPage(i);
+        const opList = await pdfPage.getOperatorList();
 
-        for (let i = 1; i <= pdfDoc.numPages; i++) {
-          const pdfPage = await pdfDoc.getPage(i);
-          const opList = await pdfPage.getOperatorList();
+        const { commonObjs, objs } = pdfPage;
+        const imgIndex = opList.fnArray.indexOf(OPS.paintImageXObject);
+        const [objId, width, height] = opList.argsArray[imgIndex];
 
-          const { commonObjs, objs } = pdfPage;
-          const imgIndex = opList.fnArray.indexOf(OPS.paintImageXObject);
-          const [objId, width, height] = opList.argsArray[imgIndex];
+        if (i < NUM_PAGES_THRESHOLD) {
+          expect(objId).toEqual(`img_p${i - 1}_1`);
 
-          if (i < NUM_PAGES_THRESHOLD) {
-            expect(objId).toEqual(`img_p${i - 1}_1`);
+          expect(objs.has(objId)).toEqual(true);
+          expect(commonObjs.has(objId)).toEqual(false);
+        } else {
+          expect(objId).toEqual(
+            `g_${loadingTask.docId}_img_p${NUM_PAGES_THRESHOLD - 1}_1`
+          );
 
-            expect(objs.has(objId)).toEqual(true);
-            expect(commonObjs.has(objId)).toEqual(false);
-          } else {
-            expect(objId).toEqual(
-              `g_${loadingTask.docId}_img_p${NUM_PAGES_THRESHOLD - 1}_1`
-            );
-
-            expect(objs.has(objId)).toEqual(false);
-            expect(commonObjs.has(objId)).toEqual(true);
-          }
-          expect(width).toEqual(EXPECTED_WIDTH);
-          expect(height).toEqual(EXPECTED_HEIGHT);
-
-          // Ensure that the actual image data is identical for all pages.
-          if (i === 1) {
-            firstImgData = objs.get(objId);
-
-            expect(firstImgData.width).toEqual(EXPECTED_WIDTH);
-            expect(firstImgData.height).toEqual(EXPECTED_HEIGHT);
-
-            expect(firstImgData.kind).toEqual(ImageKind.RGB_24BPP);
-            expect(firstImgData.data instanceof Uint8ClampedArray).toEqual(
-              true
-            );
-            expect(firstImgData.data.length).toEqual(25245000);
-          } else {
-            const objsPool = i >= NUM_PAGES_THRESHOLD ? commonObjs : objs;
-            const currentImgData = objsPool.get(objId);
-
-            expect(currentImgData.width).toEqual(firstImgData.width);
-            expect(currentImgData.height).toEqual(firstImgData.height);
-
-            expect(currentImgData.kind).toEqual(firstImgData.kind);
-            expect(currentImgData.data instanceof Uint8ClampedArray).toEqual(
-              true
-            );
-            expect(
-              currentImgData.data.every((value, index) => {
-                return value === firstImgData.data[index];
-              })
-            ).toEqual(true);
-          }
+          expect(objs.has(objId)).toEqual(false);
+          expect(commonObjs.has(objId)).toEqual(true);
         }
+        expect(width).toEqual(EXPECTED_WIDTH);
+        expect(height).toEqual(EXPECTED_HEIGHT);
 
-        await loadingTask.destroy();
-        firstImgData = null;
-        done();
-      } catch (ex) {
-        done.fail(ex);
+        // Ensure that the actual image data is identical for all pages.
+        if (i === 1) {
+          firstImgData = objs.get(objId);
+
+          expect(firstImgData.width).toEqual(EXPECTED_WIDTH);
+          expect(firstImgData.height).toEqual(EXPECTED_HEIGHT);
+
+          expect(firstImgData.kind).toEqual(ImageKind.RGB_24BPP);
+          expect(firstImgData.data instanceof Uint8ClampedArray).toEqual(true);
+          expect(firstImgData.data.length).toEqual(25245000);
+        } else {
+          const objsPool = i >= NUM_PAGES_THRESHOLD ? commonObjs : objs;
+          const currentImgData = objsPool.get(objId);
+
+          expect(currentImgData.width).toEqual(firstImgData.width);
+          expect(currentImgData.height).toEqual(firstImgData.height);
+
+          expect(currentImgData.kind).toEqual(firstImgData.kind);
+          expect(currentImgData.data instanceof Uint8ClampedArray).toEqual(
+            true
+          );
+          expect(
+            currentImgData.data.every((value, index) => {
+              return value === firstImgData.data[index];
+            })
+          ).toEqual(true);
+        }
       }
+
+      await loadingTask.destroy();
+      firstImgData = null;
     });
   });
   describe("Multiple `getDocument` instances", function () {
@@ -2191,15 +2256,9 @@ describe("api", function () {
 
     beforeAll(function (done) {
       const fileName = "tracemonkey.pdf";
-      if (isNodeJS) {
-        dataPromise = NodeFileReaderFactory.fetch({
-          path: TEST_PDFS_PATH.node + fileName,
-        });
-      } else {
-        dataPromise = DOMFileReaderFactory.fetch({
-          path: TEST_PDFS_PATH.dom + fileName,
-        });
-      }
+      dataPromise = DefaultFileReaderFactory.fetch({
+        path: TEST_PDFS_PATH + fileName,
+      });
       done();
     });
 

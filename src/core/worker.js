@@ -139,19 +139,15 @@ class WorkerMessageHandler {
 
       // Ensure that (primarily) Node.js users won't accidentally attempt to use
       // a non-translated/non-polyfilled build of the library, since that would
-      // quickly fail anyway because of missing functionality (such as e.g.
-      // `ReadableStream` and `Promise.allSettled`).
+      // quickly fail anyway because of missing functionality.
       if (
         (typeof PDFJSDev === "undefined" || PDFJSDev.test("SKIP_BABEL")) &&
-        (typeof globalThis === "undefined" ||
-          typeof ReadableStream === "undefined" ||
-          typeof Promise.allSettled === "undefined")
+        typeof ReadableStream === "undefined"
       ) {
         throw new Error(
           "The browser/environment lacks native support for critical " +
-            "functionality used by the PDF.js library (e.g. `globalThis`, " +
-            "`ReadableStream`, and/or `Promise.allSettled`); " +
-            "please use an ES5-compatible build instead."
+            "functionality used by the PDF.js library (e.g. `ReadableStream`); " +
+            "please use a `legacy`-build instead."
         );
       }
     }
@@ -192,14 +188,15 @@ class WorkerMessageHandler {
         await pdfManager.ensureDoc("checkFirstPage");
       }
 
-      const [numPages, fingerprint] = await Promise.all([
+      const [numPages, fingerprint, isPureXfa] = await Promise.all([
         pdfManager.ensureDoc("numPages"),
         pdfManager.ensureDoc("fingerprint"),
+        pdfManager.ensureDoc("isPureXfa"),
       ]);
-      return { numPages, fingerprint };
+      return { numPages, fingerprint, isPureXfa };
     }
 
-    function getPdfManager(data, evaluatorOptions) {
+    function getPdfManager(data, evaluatorOptions, enableXfa) {
       var pdfManagerCapability = createPromiseCapability();
       let newPdfManager;
 
@@ -211,6 +208,7 @@ class WorkerMessageHandler {
             source.data,
             source.password,
             evaluatorOptions,
+            enableXfa,
             docBaseUrl
           );
           pdfManagerCapability.resolve(newPdfManager);
@@ -250,6 +248,7 @@ class WorkerMessageHandler {
               rangeChunkSize: source.rangeChunkSize,
             },
             evaluatorOptions,
+            enableXfa,
             docBaseUrl
           );
           // There may be a chance that `newPdfManager` is not initialized for
@@ -281,6 +280,7 @@ class WorkerMessageHandler {
             pdfFile,
             source.password,
             evaluatorOptions,
+            enableXfa,
             docBaseUrl
           );
           pdfManagerCapability.resolve(newPdfManager);
@@ -403,7 +403,7 @@ class WorkerMessageHandler {
         fontExtraProperties: data.fontExtraProperties,
       };
 
-      getPdfManager(data, evaluatorOptions)
+      getPdfManager(data, evaluatorOptions, data.enableXfa)
         .then(function (newPdfManager) {
           if (terminated) {
             // We were in a process of setting up the manager, but it got
@@ -489,6 +489,16 @@ class WorkerMessageHandler {
       return pdfManager.getPage(pageIndex).then(function (page) {
         return page.jsActions;
       });
+    });
+
+    handler.on("GetPageXfa", function wphSetupGetXfa({ pageIndex }) {
+      return pdfManager.getPage(pageIndex).then(function (page) {
+        return pdfManager.ensure(page, "xfaData");
+      });
+    });
+
+    handler.on("GetIsPureXfa", function wphSetupGetIsPureXfa(data) {
+      return pdfManager.ensureDoc("isPureXfa");
     });
 
     handler.on("GetOutline", function wphSetupGetOutline(data) {
@@ -707,6 +717,7 @@ class WorkerMessageHandler {
             task,
             sink,
             normalizeWhitespace: data.normalizeWhitespace,
+            includeMarkedContent: data.includeMarkedContent,
             combineTextItems: data.combineTextItems,
           })
           .then(
@@ -733,6 +744,18 @@ class WorkerMessageHandler {
             }
           );
       });
+    });
+
+    handler.on("GetStructTree", function wphGetStructTree(data) {
+      const pageIndex = data.pageIndex;
+      return pdfManager
+        .getPage(pageIndex)
+        .then(function (page) {
+          return pdfManager.ensure(page, "getStructTree");
+        })
+        .then(function (structTree) {
+          return structTree.serializable;
+        });
     });
 
     handler.on("FontFallback", function (data) {
@@ -804,4 +827,4 @@ if (
   WorkerMessageHandler.initializeFromPort(self);
 }
 
-export { WorkerTask, WorkerMessageHandler };
+export { WorkerMessageHandler, WorkerTask };

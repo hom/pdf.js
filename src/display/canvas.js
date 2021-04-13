@@ -31,20 +31,23 @@ import { getShadingPatternFromIR, TilingPattern } from "./pattern_helper.js";
 
 // <canvas> contexts store most of the state we need natively.
 // However, PDF needs a bit more state, which we store here.
-
 // Minimal font size that would be used during canvas fillText operations.
 const MIN_FONT_SIZE = 16;
 // Maximum font size that would be used during canvas fillText operations.
 const MAX_FONT_SIZE = 100;
 const MAX_GROUP_SIZE = 4096;
 
-// Heuristic value used when enforcing minimum line widths.
-const MIN_WIDTH_FACTOR = 0.65;
-
 const COMPILE_TYPE3_GLYPHS = true;
 const MAX_SIZE_TO_COMPILE = 1000;
 
 const FULL_CHUNK_HEIGHT = 16;
+
+// Because of https://bugs.chromium.org/p/chromium/issues/detail?id=1170396
+// some curves aren't rendered correctly.
+// Multiplying lineWidth by this factor should help to have "correct"
+// rendering with no artifacts.
+// Once the bug is fixed upstream, we can remove this constant and its use.
+const LINEWIDTH_SCALE_FACTOR = 1.000001;
 
 function addContextCurrentTransform(ctx) {
   // If the context doesn't expose a `mozCurrentTransform`, add a JS based one.
@@ -56,9 +59,32 @@ function addContextCurrentTransform(ctx) {
     ctx._originalTranslate = ctx.translate;
     ctx._originalTransform = ctx.transform;
     ctx._originalSetTransform = ctx.setTransform;
+    ctx._originalResetTransform = ctx.resetTransform;
 
     ctx._transformMatrix = ctx._transformMatrix || [1, 0, 0, 1, 0, 0];
     ctx._transformStack = [];
+
+    try {
+      // The call to getOwnPropertyDescriptor throws an exception in Node.js:
+      // "TypeError: Method lineWidth called on incompatible receiver
+      //  #<CanvasRenderingContext2D>".
+      const desc = Object.getOwnPropertyDescriptor(
+        Object.getPrototypeOf(ctx),
+        "lineWidth"
+      );
+
+      ctx._setLineWidth = desc.set;
+      ctx._getLineWidth = desc.get;
+
+      Object.defineProperty(ctx, "lineWidth", {
+        set: function setLineWidth(width) {
+          this._setLineWidth(width * LINEWIDTH_SCALE_FACTOR);
+        },
+        get: function getLineWidth() {
+          return this._getLineWidth();
+        },
+      });
+    } catch (_) {}
 
     Object.defineProperty(ctx, "mozCurrentTransform", {
       get: function getCurrentTransform() {
@@ -146,6 +172,12 @@ function addContextCurrentTransform(ctx) {
       this._transformMatrix = [a, b, c, d, e, f];
 
       ctx._originalSetTransform(a, b, c, d, e, f);
+    };
+
+    ctx.resetTransform = function ctxResetTransform() {
+      this._transformMatrix = [1, 0, 0, 1, 0, 0];
+
+      ctx._originalResetTransform();
     };
 
     ctx.rotate = function ctxRotate(angle) {
@@ -927,6 +959,10 @@ const CanvasGraphics = (function CanvasGraphicsClosure() {
       this.ctx.transform.apply(this.ctx, viewport.transform);
 
       this.baseTransform = this.ctx.mozCurrentTransform.slice();
+      this._combinedScaleFactor = Math.hypot(
+        this.baseTransform[0],
+        this.baseTransform[2]
+      );
 
       if (this.imageLayer) {
         this.imageLayer.beginLayout();
@@ -1273,21 +1309,20 @@ const CanvasGraphics = (function CanvasGraphicsClosure() {
           case OPS.rectangle:
             x = args[j++];
             y = args[j++];
-            let width = args[j++];
-            let height = args[j++];
-            if (width === 0 && ctx.lineWidth < this.getSinglePixelWidth()) {
-              width = this.getSinglePixelWidth();
-            }
-            if (height === 0 && ctx.lineWidth < this.getSinglePixelWidth()) {
-              height = this.getSinglePixelWidth();
-            }
+            const width = args[j++];
+            const height = args[j++];
+
             const xw = x + width;
             const yh = y + height;
             ctx.moveTo(x, y);
-            ctx.lineTo(xw, y);
-            ctx.lineTo(xw, yh);
-            ctx.lineTo(x, yh);
-            ctx.lineTo(x, y);
+            if (width === 0 || height === 0) {
+              ctx.lineTo(xw, yh);
+            } else {
+              ctx.lineTo(xw, y);
+              ctx.lineTo(xw, yh);
+              ctx.lineTo(x, yh);
+            }
+
             ctx.closePath();
             break;
           case OPS.moveTo:
@@ -1361,19 +1396,31 @@ const CanvasGraphics = (function CanvasGraphicsClosure() {
           const transform = ctx.mozCurrentTransform;
           const scale = Util.singularValueDecompose2dScale(transform)[0];
           ctx.strokeStyle = strokeColor.getPattern(ctx, this);
-          ctx.lineWidth = Math.max(
-            this.getSinglePixelWidth() * MIN_WIDTH_FACTOR,
-            this.current.lineWidth * scale
-          );
+          const lineWidth = this.getSinglePixelWidth();
+          const scaledLineWidth = this.current.lineWidth * scale;
+          if (lineWidth < 0 && -lineWidth >= scaledLineWidth) {
+            ctx.resetTransform();
+            ctx.lineWidth = Math.round(this._combinedScaleFactor);
+          } else {
+            ctx.lineWidth = Math.max(lineWidth, scaledLineWidth);
+          }
           ctx.stroke();
           ctx.restore();
         } else {
-          // Prevent drawing too thin lines by enforcing a minimum line width.
-          ctx.lineWidth = Math.max(
-            this.getSinglePixelWidth() * MIN_WIDTH_FACTOR,
-            this.current.lineWidth
-          );
-          ctx.stroke();
+          const lineWidth = this.getSinglePixelWidth();
+          if (lineWidth < 0 && -lineWidth >= this.current.lineWidth) {
+            // The current transform will transform a square pixel into a
+            // parallelogram where both heights are lower than 1 and not equal.
+            ctx.save();
+            ctx.resetTransform();
+            ctx.lineWidth = Math.round(this._combinedScaleFactor);
+            ctx.stroke();
+            ctx.restore();
+          } else {
+            // Prevent drawing too thin lines by enforcing a minimum line width.
+            ctx.lineWidth = Math.max(lineWidth, this.current.lineWidth);
+            ctx.stroke();
+          }
         }
       }
       if (consumePath) {
@@ -1500,10 +1547,7 @@ const CanvasGraphics = (function CanvasGraphicsClosure() {
       if (!fontObj) {
         throw new Error(`Can't find font for ${fontRefName}`);
       }
-
-      current.fontMatrix = fontObj.fontMatrix
-        ? fontObj.fontMatrix
-        : FONT_IDENTITY_MATRIX;
+      current.fontMatrix = fontObj.fontMatrix || FONT_IDENTITY_MATRIX;
 
       // A valid matrix needs all main diagonal elements to be non-zero
       // This also ensures we bypass FF bugzilla bug #719844.
@@ -1568,7 +1612,7 @@ const CanvasGraphics = (function CanvasGraphicsClosure() {
     },
     setTextMatrix: function CanvasGraphics_setTextMatrix(a, b, c, d, e, f) {
       this.current.textMatrix = [a, b, c, d, e, f];
-      this.current.textMatrixScale = Math.sqrt(a * a + b * b);
+      this.current.textMatrixScale = Math.hypot(a, b);
 
       this.current.x = this.current.lineX = 0;
       this.current.y = this.current.lineY = 0;
@@ -1577,7 +1621,7 @@ const CanvasGraphics = (function CanvasGraphicsClosure() {
       this.moveText(0, this.current.leading);
     },
 
-    paintChar(character, x, y, patternTransform) {
+    paintChar(character, x, y, patternTransform, resetLineWidthToOne) {
       const ctx = this.ctx;
       const current = this.current;
       const font = current.font;
@@ -1613,6 +1657,10 @@ const CanvasGraphics = (function CanvasGraphicsClosure() {
           fillStrokeMode === TextRenderingMode.STROKE ||
           fillStrokeMode === TextRenderingMode.FILL_STROKE
         ) {
+          if (resetLineWidthToOne) {
+            ctx.resetTransform();
+            ctx.lineWidth = Math.round(this._combinedScaleFactor);
+          }
           ctx.stroke();
         }
         ctx.restore();
@@ -1627,7 +1675,16 @@ const CanvasGraphics = (function CanvasGraphicsClosure() {
           fillStrokeMode === TextRenderingMode.STROKE ||
           fillStrokeMode === TextRenderingMode.FILL_STROKE
         ) {
-          ctx.strokeText(character, x, y);
+          if (resetLineWidthToOne) {
+            ctx.save();
+            ctx.moveTo(x, y);
+            ctx.resetTransform();
+            ctx.lineWidth = Math.round(this._combinedScaleFactor);
+            ctx.strokeText(character, 0, 0);
+            ctx.restore();
+          } else {
+            ctx.strokeText(character, x, y);
+          }
         }
       }
 
@@ -1714,6 +1771,7 @@ const CanvasGraphics = (function CanvasGraphicsClosure() {
       }
 
       let lineWidth = current.lineWidth;
+      let resetLineWidthToOne = false;
       const scale = current.textMatrixScale;
       if (scale === 0 || lineWidth === 0) {
         const fillStrokeMode =
@@ -1723,7 +1781,8 @@ const CanvasGraphics = (function CanvasGraphicsClosure() {
           fillStrokeMode === TextRenderingMode.FILL_STROKE
         ) {
           this._cachedGetSinglePixelWidth = null;
-          lineWidth = this.getSinglePixelWidth() * MIN_WIDTH_FACTOR;
+          lineWidth = this.getSinglePixelWidth();
+          resetLineWidthToOne = lineWidth < 0;
         }
       } else {
         lineWidth /= scale;
@@ -1791,7 +1850,13 @@ const CanvasGraphics = (function CanvasGraphicsClosure() {
             // common case
             ctx.fillText(character, scaledX, scaledY);
           } else {
-            this.paintChar(character, scaledX, scaledY, patternTransform);
+            this.paintChar(
+              character,
+              scaledX,
+              scaledY,
+              patternTransform,
+              resetLineWidthToOne
+            );
             if (accent) {
               const scaledAccentX =
                 scaledX + (fontSize * accent.offset.x) / fontSizeScale;
@@ -1801,7 +1866,8 @@ const CanvasGraphics = (function CanvasGraphicsClosure() {
                 accent.fontChar,
                 scaledAccentX,
                 scaledAccentY,
-                patternTransform
+                patternTransform,
+                resetLineWidthToOne
               );
             }
           }
@@ -2160,7 +2226,7 @@ const CanvasGraphics = (function CanvasGraphicsClosure() {
       this.groupStack.push(currentCtx);
       this.groupLevel++;
 
-      // Reseting mask state, masks will be applied on restore of the group.
+      // Resetting mask state, masks will be applied on restore of the group.
       this.current.activeSMask = null;
     },
 
@@ -2425,12 +2491,14 @@ const CanvasGraphics = (function CanvasGraphicsClosure() {
       ctx.scale(1 / width, -1 / height);
 
       const currentTransform = ctx.mozCurrentTransformInverse;
-      const a = currentTransform[0],
-        b = currentTransform[1];
-      let widthScale = Math.max(Math.sqrt(a * a + b * b), 1);
-      const c = currentTransform[2],
-        d = currentTransform[3];
-      let heightScale = Math.max(Math.sqrt(c * c + d * d), 1);
+      let widthScale = Math.max(
+        Math.hypot(currentTransform[0], currentTransform[1]),
+        1
+      );
+      let heightScale = Math.max(
+        Math.hypot(currentTransform[2], currentTransform[3]),
+        1
+      );
 
       let imgToPaint, tmpCanvas, tmpCtx;
       // typeof check is needed due to node.js support, see issue #8489
@@ -2622,17 +2690,49 @@ const CanvasGraphics = (function CanvasGraphicsClosure() {
       }
       ctx.beginPath();
     },
-    getSinglePixelWidth(scale) {
+    getSinglePixelWidth() {
       if (this._cachedGetSinglePixelWidth === null) {
-        const inverse = this.ctx.mozCurrentTransformInverse;
-        // max of the current horizontal and vertical scale
-        this._cachedGetSinglePixelWidth = Math.sqrt(
-          Math.max(
-            inverse[0] * inverse[0] + inverse[1] * inverse[1],
-            inverse[2] * inverse[2] + inverse[3] * inverse[3]
-          )
-        );
+        // If transform is [a b] then a pixel (square) is transformed
+        //                 [c d]
+        // into a parallelogram: its area is the abs value of the determinant.
+        // This parallelogram has 2 heights:
+        //  - Area / |col_1|;
+        //  - Area / |col_2|.
+        // so in order to get a height of at least 1, pixel height
+        // must be computed as followed:
+        //  h = max(sqrt(a² + c²) / |det(M)|, sqrt(b² + d²) / |det(M)|).
+        // This is equivalent to:
+        //  h = max(|line_1_inv(M)|, |line_2_inv(M)|)
+        const m = this.ctx.mozCurrentTransform;
+
+        const absDet = Math.abs(m[0] * m[3] - m[2] * m[1]);
+        const sqNorm1 = m[0] ** 2 + m[2] ** 2;
+        const sqNorm2 = m[1] ** 2 + m[3] ** 2;
+        const pixelHeight = Math.sqrt(Math.max(sqNorm1, sqNorm2)) / absDet;
+        if (
+          sqNorm1 !== sqNorm2 &&
+          this._combinedScaleFactor * pixelHeight > 1
+        ) {
+          // The parallelogram isn't a square and at least one height
+          // is lower than 1 so the resulting line width must be 1
+          // but it cannot be achieved with one scale: when scaling a pixel
+          // we'll get a rectangle (see issue #12295).
+          // For example with matrix [0.001 0, 0, 100], a pixel is transformed
+          // in a rectangle 0.001x100. If we just scale by 1000 (to have a 1)
+          // then we'll get a rectangle 1x1e5 which is wrong.
+          // In this case, we must reset the transform, set linewidth to 1
+          // and then stroke.
+          this._cachedGetSinglePixelWidth = -(
+            this._combinedScaleFactor * pixelHeight
+          );
+        } else if (absDet > Number.EPSILON) {
+          this._cachedGetSinglePixelWidth = pixelHeight;
+        } else {
+          // Matrix is non-invertible.
+          this._cachedGetSinglePixelWidth = 1;
+        }
       }
+
       return this._cachedGetSinglePixelWidth;
     },
     getCanvasPosition: function CanvasGraphics_getCanvasPosition(x, y) {
